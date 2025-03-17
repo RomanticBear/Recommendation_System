@@ -25,6 +25,22 @@ headers = {
 }
 
 CHECKPOINT_FILE = "processed_isbns.txt"
+CSV_CHECKPOINT_FILE = "processed_csv_files.txt"
+
+
+# 이미 크롤링한 CSV 파일 불러오기
+def load_processed_csv_files():
+    if os.path.exists(CSV_CHECKPOINT_FILE):
+        with open(CSV_CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+            return set(f.read().splitlines())
+    return set()
+
+
+# 크롤링 완료한 CSV 파일 저장하기
+def save_processed_csv_file(file_path):
+    with open(CSV_CHECKPOINT_FILE, "a", encoding="utf-8") as f:
+        f.write(file_path + "\n")
+
 
 # 이미 크롤링한 ISBN 불러오기
 def load_processed_isbns():
@@ -33,12 +49,14 @@ def load_processed_isbns():
             return set(f.read().splitlines())
     return set()
 
+
 # 크롤링한 ISBN 저장하기
 def save_processed_isbn(isbn):
     with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
         f.write(isbn + "\n")
 
-# ISBN 목록 읽기 (NA 값 제거)
+
+# ISBN 목록 읽기 (NA 값 제거 및 중복 제거)
 def read_isbn_list(filename):
     try:
         data = pd.read_csv(filename, low_memory=False, dtype={"ISBN_THIRTEEN_NO": str})
@@ -49,11 +67,11 @@ def read_isbn_list(filename):
         print(f"[ERROR] ISBN CSV 파일 읽기 실패: {e}")
         return []
 
+
 # ISBN으로 도서 조회 및 URL 반환
 def get_book_page_url(book_isbn):
-    # 연습용
+    # test 교보
     # search_url = f"https://search.kyobobook.co.kr/web/search?vPstrKeyWord={book_isbn}&orderClick=LAG"
-
     try:
         response = requests.get(search_url, headers=headers, timeout=10)
         response.raise_for_status()
@@ -62,8 +80,17 @@ def get_book_page_url(book_isbn):
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
+
+    # 검색 결과 없음 메시지 확인
+    no_data_tag = soup.find("div", class_="no_data size_sm")
+    if no_data_tag:
+        print(f"[INFO] ISBN {book_isbn} 검색 결과 없음. 크롤링 건너뜀.")
+        return None
+
+    # 정상적인 도서 상세 페이지 링크 가져오기
     book_detail_link = soup.find("a", class_="prod_link")
     return book_detail_link["href"] if book_detail_link else None
+
 
 # 도서 정보 크롤링
 def get_book_info(book_url, driver):
@@ -98,11 +125,6 @@ def get_book_info(book_url, driver):
     intro_list = intro_tag.find_all("div", class_="info_text") if intro_tag else []
     intro = ''.join([intro.text.strip() for intro in intro_list]) if intro_list else "N/A"
 
-    # 목차
-    book_contents_div = soup.find("div", class_="book_contents")
-    book_contents_li = book_contents_div.find("li", class_="book_contents_item") if book_contents_div else None
-    book_contents = book_contents_li.text.strip() if book_contents_li else "N/A"
-
     # 출판사 서평
     book_publish_review_div = soup.find("div", class_="book_publish_review")
     book_publish_review_p = book_publish_review_div.find("p", class_="info_text") if book_publish_review_div else None
@@ -126,31 +148,37 @@ def get_book_info(book_url, driver):
         "Image": img_url,
         "Category": ", ".join(category),
         "Intro": intro,
-        "Contents": book_contents,
-        "Publisher Review": book_publish_review,
+        "Review": book_publish_review,
         "Page": page_num
     }
 
-# CSV 저장 함수
-def save_to_csv(data, filename="crawling_data/books.csv"):
+
+# CSV 저장 함수 (연도별 & CSV 파일별 저장)
+def save_to_csv(data, year, filename):
     try:
-        file_exists = os.path.isfile(filename)
-        with open(filename, mode="a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=["Title", "Image", "Category", "Intro", "Contents", "Publisher Review", "Page"])
+        save_folder = os.path.join("crawling_data", year)
+        os.makedirs(save_folder, exist_ok=True)
+
+        save_path = os.path.join(save_folder, filename)
+        file_exists = os.path.isfile(save_path)
+
+        with open(save_path, mode="a", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=["Title", "Image", "Category", "Intro", "Review", "Page"])
             if not file_exists:
                 writer.writeheader()
             writer.writerows(data)
-        print(f"[INFO] CSV 파일 업데이트 완료 (총 {len(data)}권 저장됨)")
+        print(f"[INFO] CSV 저장 완료: {save_path} (총 {len(data)}권 저장됨)")
     except Exception as e:
-        print(f"[ERROR] CSV 파일 저장 실패: {e}")
+        print(f"[ERROR] CSV 저장 실패 ({filename}): {e}")
 
-# main 함수
+
+# main 함수 (CSV 중복 방지 기능 추가)
 def main():
     base_folder = "book_data"
     processed_isbns = load_processed_isbns()
+    processed_csv_files = load_processed_csv_files()
 
     for year in os.listdir(base_folder):
-
         if year == "2019":
             print(f"[INFO] {year} 폴더 건너뜀")
             continue
@@ -159,9 +187,16 @@ def main():
         if os.path.isdir(year_path):
             print(f"\n📂 {year} 폴더")
             csv_files = [f for f in os.listdir(year_path) if f.endswith(".csv")]
+
             for file in csv_files:
-                print(f"\n👻 {file} 크롤링 시작")
                 file_path = os.path.join(year_path, file)
+
+                # 이미 크롤링 완료한 파일이면 건너뛰기
+                if file_path in processed_csv_files:
+                    print(f"[INFO] {file} 이미 크롤링 완료됨. 건너뜀.")
+                    continue
+
+                print(f"\n📖 {file} 크롤링 시작")
                 isbn_list = read_isbn_list(file_path)
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
                 book_data = []
@@ -170,20 +205,26 @@ def main():
                     if not isbn or isbn in processed_isbns:
                         continue
 
+                    save_processed_isbn(isbn)  # isbn 저장
+
                     print(f"[INFO] {idx}/{len(isbn_list)} ISBN 처리 중: {isbn}")
                     book_url = get_book_page_url(isbn)
+
                     if book_url:
                         book_info = get_book_info(book_url, driver)
                         if book_info:
                             book_data.append(book_info)
-                            save_processed_isbn(isbn)
 
                     if idx % 100 == 0:
-                        save_to_csv(book_data)
+                        save_to_csv(book_data, year, file)
                         book_data = []
 
                 driver.quit()
-                save_to_csv(book_data)
+                save_to_csv(book_data, year, file)
+
+                # CSV 파일 크롤링 완료 후 기록
+                save_processed_csv_file(file_path)
+
 
 if __name__ == "__main__":
     main()
