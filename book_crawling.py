@@ -70,7 +70,6 @@ def read_isbn_list(filename):
 
 # ISBN으로 도서 조회 및 URL 반환
 def get_book_page_url(book_isbn):
-    # test 교보
     # search_url = f"https://search.kyobobook.co.kr/web/search?vPstrKeyWord={book_isbn}&orderClick=LAG"
     try:
         response = requests.get(search_url, headers=headers, timeout=10)
@@ -111,6 +110,10 @@ def get_book_info(book_url, driver):
     title_tag = soup.find("span", class_="prod_title")
     title = title_tag.text.strip() if title_tag else "N/A"
 
+    # 출판사
+    publisher_tag = soup.find("a", class_="btn_publish_link")
+    publisher = publisher_tag.text.strip() if publisher_tag else "N/A"
+
     # 이미지 URL
     img_div = soup.find("div", class_="blur_img_wrap portrait")
     img_url = img_div.find("img").get("src") if img_div and img_div.find("img") else "N/A"
@@ -130,6 +133,11 @@ def get_book_info(book_url, driver):
     book_publish_review_p = book_publish_review_div.find("p", class_="info_text") if book_publish_review_div else None
     book_publish_review = book_publish_review_p.text.strip() if book_publish_review_p else "N/A"
 
+    # 목차 가져오기
+    book_contents_div = soup.find("div", class_="book_contents")
+    book_contents_li = book_contents_div.find("li", class_="book_contents_item") if book_contents_div else None
+    book_contents = book_contents_li.text.strip() if book_contents_li else "N/A"
+
     # 쪽수
     page_num = "N/A"
     basic_info_div = soup.find("div", class_="basic_info")
@@ -145,10 +153,12 @@ def get_book_info(book_url, driver):
 
     return {
         "Title": title,
+        "Publisher": publisher,
         "Image": img_url,
         "Category": ", ".join(category),
         "Intro": intro,
         "Review": book_publish_review,
+        "Contents": book_contents,
         "Page": page_num
     }
 
@@ -156,14 +166,15 @@ def get_book_info(book_url, driver):
 # CSV 저장 함수 (연도별 & CSV 파일별 저장)
 def save_to_csv(data, year, filename):
     try:
-        save_folder = os.path.join("crawling_data", year)
+        save_folder = os.path.join("kyobo_crawling_data", year)
         os.makedirs(save_folder, exist_ok=True)
 
         save_path = os.path.join(save_folder, filename)
         file_exists = os.path.isfile(save_path)
 
         with open(save_path, mode="a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=["Title", "Image", "Category", "Intro", "Review", "Page"])
+            writer = csv.DictWriter(file, fieldnames=["Title", "Publisher", "Image", "Category", "Intro", "Review",
+                                                      "Contents", "Page"])
             if not file_exists:
                 writer.writeheader()
             writer.writerows(data)
@@ -174,7 +185,7 @@ def save_to_csv(data, year, filename):
 
 # main 함수 (CSV 중복 방지 기능 추가)
 def main():
-    base_folder = "book_data"
+    base_folder = "processing_book_data"
     processed_isbns = load_processed_isbns()
     processed_csv_files = load_processed_csv_files()
 
