@@ -1,8 +1,18 @@
 # -*- coding: utf-8 -*-
 
+import os
+from dotenv import load_dotenv
 from groq import Groq
 
-client = Groq(api_key="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")
+# .env 파일 로드
+load_dotenv()
+
+# API 키 불러오기
+api_key = os.getenv("API_KEY")
+
+# Groq 클라이언트 생성
+client = Groq(api_key=api_key)
+
 
 
 prompt = """
