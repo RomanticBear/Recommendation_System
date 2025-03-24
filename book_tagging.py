@@ -1,28 +1,29 @@
 # -*- coding: utf-8 -*-
+
 import os
-import re
 import time
 import random
-import httpx
 import pandas as pd
 from queue import Queue
 from threading import Thread
 from dotenv import load_dotenv
 from groq import Groq
 
-# ✅ 실행 시작 시간 기록
+# 실행 시작 시간 기록
 start_time = time.time()
 
-# ✅ API 키 로딩
+# API 키 로딩
 load_dotenv()
 api_keys = [
     os.getenv("API_KEY_1"),
     os.getenv("API_KEY_2"),
     os.getenv("API_KEY_3")
 ]
+
+# 클라이언트 인스턴스 생성
 clients = [Groq(api_key=k) for k in api_keys]
 
-# ✅ 모델 리스트
+# LLM 모델 리스트
 model_list = [
     "deepseek-r1-distill-llama-70b",
     "deepseek-r1-distill-qwen-32b",
@@ -42,7 +43,7 @@ model_list = [
     "qwen-qwq-32b"
 ]
 
-# ✅ 태그 목록
+# 태그 목록
 raw_tag_list = """판타지
 SF
 미스터리
@@ -114,9 +115,10 @@ SF
 신화적 세계
 가상 현실
 기후 변화 세계"""
+
 tag_candidates = [t.strip() for t in raw_tag_list.strip().splitlines() if t.strip()]
 
-# ✅ 프롬프트 생성
+# 프롬프트 생성
 def generate_prompt(review_text):
     prompt = """
     당신은 문학 서평 전문가입니다. 아래 서평을 읽고, 제공된 태그 목록 중 이 책에 어울리는 태그를 3개에서 5개까지 골라주세요. 무조건 골라야합니다.
@@ -129,22 +131,27 @@ def generate_prompt(review_text):
     """
     return f"{prompt}\n\n서평:\n{review_text}\n\n태그 목록:\n{raw_tag_list}"
 
-# ✅ 유효 태그 추출
+# 유효 태그 추출
 def extract_valid_tags(text):
     raw_tags = [tag.strip() for tag in text.split(",") if tag.strip()]
-    return [tag for tag in raw_tags if tag in tag_candidates]
+    return [tag for tag in raw_tags if tag in tag_candidates]   # raw_tag_list안에 있는 태그만 담음
 
-# ✅ 결과 및 쿨다운
-results = {}
-token_cooldown = {}
+# 결과 및 쿨다운
+results = {}  # {index: 태그 결과} 형태의 결과 캐싱
+token_cooldown = {}  # {(모델, 클라이언트): 마지막 호출 시간} 기록
 
-# ✅ 작업 큐 구성 (중앙 큐)
+# 모델-클라이언트 조합 준비 (라운드 로빈용)
+all_combos = [(m, i) for m in model_list for i in range(len(clients))]
+combo_index = 0  # 전역 인덱스 (스레드 간 공유 시 Lock 필요할 수 있음)
+
+# 작업 큐 구성 (중앙 큐)
 task_queue = Queue()
 
-# ✅ 모델-클라이언트 워커
+# 모델-클라이언트 워커
 max_retries = 5
 
 def model_worker():
+    global combo_index
     while True:
         item = task_queue.get()
         if item is None:
@@ -152,16 +159,17 @@ def model_worker():
 
         idx, title, review_text, retry_count = item
 
-        # 무작위 모델-클라이언트 선택
-        model = random.choice(model_list)
-        client_idx = random.randint(0, len(clients) - 1)
+        # 모델-클라이언트 조합을 라운드로빈 방식으로 선택
+        combo = all_combos[combo_index % len(all_combos)]
+        combo_index += 1
+        model, client_idx = combo
         client = clients[client_idx]
-        cooldown_key = (model, client_idx)
+        cooldown_key = (model, client_idx)  # 특정 조합의 쿨다운 여부를 판단하기 위한 식별 키
 
         # 쿨다운 확인
-        now = time.time()
-        last_used = token_cooldown.get(cooldown_key, 0)
-        wait_time = max(0, 4 - (now - last_used))
+        now = time.time()   # 지금 시간
+        last_used = token_cooldown.get(cooldown_key, 0) # 마지막 사용 시간
+        wait_time = max(0, 4 - (now - last_used)) # 같은 api + 모델 호출이 4초가 안지났다면 기다리게 함
         if wait_time > 0:
             time.sleep(wait_time)
 
@@ -180,12 +188,13 @@ def model_worker():
                 stream=False,
                 timeout=10
             )
-            token_cooldown[cooldown_key] = time.time()
-            content = response.choices[0].message.content.strip()
-            tags = extract_valid_tags(content)
+            token_cooldown[cooldown_key] = time.time()  # 사용한 시각 저장
+            content = response.choices[0].message.content.strip() # 응답에서 텍스트 추출출
+            tags = extract_valid_tags(content) # 태그 추출
 
+            # 태그 개수가 너무 적으면 재시도
             if len(tags) < 3:
-                print(f"⚠️ [{idx+1}] {title} → 태그 부족 → 재시도 {retry_count+1}/{max_retries}")
+                print(f"⚠️ [{idx+1}] {title} → 태그 부숙 → 재시도 {retry_count+1}/{max_retries}")
                 if retry_count + 1 < max_retries:
                     task_queue.put((idx, title, review_text, retry_count+1))
                 else:
@@ -194,6 +203,7 @@ def model_worker():
                 results[idx] = ", ".join(tags)
                 print(f"✅ [{idx+1}] {title} → {tags} ({model}, API_KEY_{client_idx+1})")
 
+        # 예외가 발생한 경우 (429 에러 포함 )
         except Exception as e:
             print(f"❌ [{idx+1}] {title} 에러: {e} (API_KEY_{client_idx+1})")
             if retry_count + 1 < max_retries:
@@ -201,35 +211,35 @@ def model_worker():
             else:
                 results[idx] = "오류"
 
-        task_queue.task_done()
+        task_queue.task_done() # 퀴 작업 종료 알림
 
-# ✅ 데이터 로딩 및 큐 적재
+# 데이터 로드 및 퀴 적재
 df = pd.read_csv("test_data.csv")
 for idx, row in df.iterrows():
     title = row["Title"]
-    review = str(row["Review"] or "")[:1000]
+    review = str(row["Review"] or "")    # 서평 데이터 길이 축약
     task_queue.put((idx, title, review, 0))
 
-# ✅ 스레드 시작
+# 스레드 시작
 threads = []
-num_threads = len(model_list) * len(clients) // 2  # 유연한 병렬성 조절
+num_threads = len(model_list) * len(clients) // 2  # 유연한 범려성 조절 - 부화 조절 -  스레드 개수: 모델 수 * 키 수 / 2
 for _ in range(num_threads):
-    t = Thread(target=model_worker)
-    t.start()
-    threads.append(t)
+    t = Thread(target=model_worker)  # 스레드 생성
+    t.start()   # 스레드 시작
+    threads.append(t)   # 나중 종료 처리를 위해 저장
 
-# ✅ 큐 대기 및 종료
-task_queue.join()
-for _ in threads:
+# 퀴 대기 및 종료
+task_queue.join()  # 퀴에 있는 모든 작업이 끝날 때까지 대기
+for _ in threads:  # 모든 작업 끝날때까지 None 전송
     task_queue.put(None)
-for t in threads:
+for t in threads:  # 모든 스레드가 종료될때까지 대기
     t.join()
 
-# ✅ 결과 저장
+# 결과 저장
 df["AI_태그"] = [results.get(i, "오류") for i in range(len(df))]
 df.to_csv("book_test_tagged.csv", index=False, encoding="utf-8-sig")
 
-# ✅ 런타임 출력
+# 런타임 출력
 end_time = time.time()
-print(f"\n✅ 모든 리뷰 태그 추출 완료 → 'book_test_tagged.csv' 저장됨!")
+print(f"\n✅ 모든 서평 태그 추출 완료 → 'book_test_tagged.csv' 저장됨!")
 print(f"⏱️ 전체 소요 시간: {end_time - start_time:.2f}초")
