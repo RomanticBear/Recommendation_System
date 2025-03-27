@@ -45,7 +45,8 @@ def read_csv_subset(filename):
 
 
 def get_book_page_url(book_isbn):
-    search_url = f"https://www.yes24.com/product/search?domain=BOOK&query={book_isbn}"
+    # test - yes24
+    # search_url = f"https://www.yes24.com/product/search?domain=BOOK&query={book_isbn}"
     response = safe_request(search_url)
     if not response:
         return None
