@@ -2,14 +2,12 @@
 
 import os
 import time
-import random
 import pandas as pd
 from queue import Queue
-from threading import Thread
+from threading import Thread, Lock
 from dotenv import load_dotenv
 from groq import Groq
 
-# 실행 시작 시간 기록
 start_time = time.time()
 
 # API 키 로딩
@@ -17,13 +15,12 @@ load_dotenv()
 api_keys = [
     os.getenv("API_KEY_1"),
     os.getenv("API_KEY_2"),
-    os.getenv("API_KEY_3")
+    os.getenv("API_KEY_3"),
+    os.getenv("API_KEY_4"),
 ]
 
-# 클라이언트 인스턴스 생성
 clients = [Groq(api_key=k) for k in api_keys]
 
-# LLM 모델 리스트
 model_list = [
     "deepseek-r1-distill-llama-70b",
     "deepseek-r1-distill-qwen-32b",
@@ -118,7 +115,6 @@ SF
 
 tag_candidates = [t.strip() for t in raw_tag_list.strip().splitlines() if t.strip()]
 
-# 프롬프트 생성
 def generate_prompt(review_text):
     prompt = """
     당신은 문학 서평 전문가입니다. 아래 서평을 읽고, 제공된 태그 목록 중 이 책에 어울리는 태그를 3개에서 5개까지 골라주세요. 무조건 골라야합니다.
@@ -131,23 +127,26 @@ def generate_prompt(review_text):
     """
     return f"{prompt}\n\n서평:\n{review_text}\n\n태그 목록:\n{raw_tag_list}"
 
-# 유효 태그 추출
 def extract_valid_tags(text):
     raw_tags = [tag.strip() for tag in text.split(",") if tag.strip()]
-    return [tag for tag in raw_tags if tag in tag_candidates]   # raw_tag_list안에 있는 태그만 담음
+    return [tag for tag in raw_tags if tag in tag_candidates]
 
-# 결과 및 쿨다운
-results = {}  # {index: 태그 결과} 형태의 결과 캐싱
-token_cooldown = {}  # {(모델, 클라이언트): 마지막 호출 시간} 기록
-
-# 모델-클라이언트 조합 준비 (라운드 로빈용)
+results = {}
+token_cooldown = {}
 all_combos = [(m, i) for m in model_list for i in range(len(clients))]
-combo_index = 0  # 전역 인덱스 (스레드 간 공유 시 Lock 필요할 수 있음)
-
-# 작업 큐 구성 (중앙 큐)
+combo_index = 0
+combo_lock = Lock()
+processed_isbns_lock = Lock()
 task_queue = Queue()
 
-# 모델-클라이언트 워커
+tagged_file = "revise_book_test_tagged.csv"
+if os.path.exists(tagged_file):
+    existing_df = pd.read_csv(tagged_file)
+    processed_isbns = set(existing_df["isbn"].dropna().astype(str).tolist())
+else:
+    existing_df = pd.DataFrame(columns=["isbn", "AI_태그"])
+    processed_isbns = set()
+
 max_retries = 5
 
 def model_worker():
@@ -157,23 +156,39 @@ def model_worker():
         if item is None:
             break
 
-        idx, title, review_text, retry_count = item
+        idx, isbn, title, review_text, retry_count = item
 
-        # 모델-클라이언트 조합을 라운드로빈 방식으로 선택
-        combo = all_combos[combo_index % len(all_combos)]
-        combo_index += 1
+        with processed_isbns_lock:
+            if isbn in processed_isbns:
+                task_queue.task_done()
+                continue
+
+        if len(review_text.strip()) <= 100:
+            tag_str = ""
+            print(f"ℹ️ [{idx+1}] {title} → 리뷰 짧음, 태그 생략")
+            new_row = pd.DataFrame([{"isbn": isbn, "AI_태그": tag_str}])
+            write_header = not os.path.exists(tagged_file) or os.path.getsize(tagged_file) == 0
+            new_row.to_csv(tagged_file, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+            with processed_isbns_lock:
+                processed_isbns.add(isbn)
+            print(f"📌 저장된 ISBN: {isbn} / 태그: (생략)")
+            task_queue.task_done()
+            continue
+
+        with combo_lock:
+            combo = all_combos[combo_index % len(all_combos)]
+            combo_index += 1
+
         model, client_idx = combo
         client = clients[client_idx]
-        cooldown_key = (model, client_idx)  # 특정 조합의 쿨다운 여부를 판단하기 위한 식별 키
+        cooldown_key = (model, client_idx)
 
-        # 쿨다운 확인
-        now = time.time()   # 지금 시간
-        last_used = token_cooldown.get(cooldown_key, 0) # 마지막 사용 시간
-        wait_time = max(0, 4 - (now - last_used)) # 같은 api + 모델 호출이 4초가 안지났다면 기다리게 함
+        now = time.time()
+        last_used = token_cooldown.get(cooldown_key, 0)
+        wait_time = max(0, 4 - (now - last_used))
         if wait_time > 0:
             time.sleep(wait_time)
 
-        # 프롬프트 생성 및 호출
         prompt = generate_prompt(review_text)
         try:
             response = client.chat.completions.create(
@@ -188,58 +203,90 @@ def model_worker():
                 stream=False,
                 timeout=10
             )
-            token_cooldown[cooldown_key] = time.time()  # 사용한 시각 저장
-            content = response.choices[0].message.content.strip() # 응답에서 텍스트 추출출
-            tags = extract_valid_tags(content) # 태그 추출
+            token_cooldown[cooldown_key] = time.time()
+            content = response.choices[0].message.content.strip()
+            tags = extract_valid_tags(content)
 
-            # 태그 개수가 너무 적으면 재시도
             if len(tags) < 3:
-                print(f"⚠️ [{idx+1}] {title} → 태그 부숙 → 재시도 {retry_count+1}/{max_retries}")
+                print(f"⚠️ [{idx+1}] {title} → 태그 부족 → 재시도 {retry_count+1}/{max_retries}")
                 if retry_count + 1 < max_retries:
-                    task_queue.put((idx, title, review_text, retry_count+1))
+                    task_queue.put((idx, isbn, title, review_text, retry_count+1))
                 else:
-                    results[idx] = "오류"
+                    tag_str = "오류"
+                    new_row = pd.DataFrame([{"isbn": isbn, "AI_태그": tag_str}])
+                    write_header = not os.path.exists(tagged_file) or os.path.getsize(tagged_file) == 0
+                    new_row.to_csv(tagged_file, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+                    with processed_isbns_lock:
+                        processed_isbns.add(isbn)
+                    print(f"📌 저장된 ISBN: {isbn} / 태그: 오류")
             else:
-                results[idx] = ", ".join(tags)
+                tag_str = ", ".join(tags)
                 print(f"✅ [{idx+1}] {title} → {tags} ({model}, API_KEY_{client_idx+1})")
+                new_row = pd.DataFrame([{"isbn": isbn, "AI_태그": tag_str}])
+                write_header = not os.path.exists(tagged_file) or os.path.getsize(tagged_file) == 0
+                new_row.to_csv(tagged_file, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+                with processed_isbns_lock:
+                    processed_isbns.add(isbn)
+                print(f"📌 저장된 ISBN: {isbn} / 태그: {tag_str}")
 
-        # 예외가 발생한 경우 (429 에러 포함 )
         except Exception as e:
             print(f"❌ [{idx+1}] {title} 에러: {e} (API_KEY_{client_idx+1})")
             if retry_count + 1 < max_retries:
-                task_queue.put((idx, title, review_text, retry_count+1))
-            else:
-                results[idx] = "오류"
+                task_queue.put((idx, isbn, title, review_text, retry_count+1))
 
-        task_queue.task_done() # 퀴 작업 종료 알림
+        task_queue.task_done()
 
-# 데이터 로드 및 퀴 적재
-df = pd.read_csv("test_data.csv")
+# CSV 로드 및 컬럼 소문자화
+df = pd.read_csv("yes24_steadyseller.csv", on_bad_lines='skip', encoding="utf-8")
+df.columns = [col.lower() for col in df.columns]
+
+# 태스크 큐에 작업 넣기
 for idx, row in df.iterrows():
-    title = row["Title"]
-    review = str(row["Review"] or "")    # 서평 데이터 길이 축약
-    task_queue.put((idx, title, review, 0))
+    isbn = str(row.get("isbn", "")).strip()
+    if not isbn or isbn.lower() == "nan" or isbn in processed_isbns:
+        continue
+    title = row.get("title", "")
+    review = str(row.get("publisher_review", "")).strip()
+    task_queue.put((idx, isbn, title, review, 0))
 
-# 스레드 시작
+# 쓰레드 실행
 threads = []
-num_threads = len(model_list) * len(clients) // 2  # 유연한 범려성 조절 - 부화 조절 -  스레드 개수: 모델 수 * 키 수 / 2
+num_threads = len(model_list) * len(clients) // 2
 for _ in range(num_threads):
-    t = Thread(target=model_worker)  # 스레드 생성
-    t.start()   # 스레드 시작
-    threads.append(t)   # 나중 종료 처리를 위해 저장
+    t = Thread(target=model_worker)
+    t.start()
+    threads.append(t)
 
-# 퀴 대기 및 종료
-task_queue.join()  # 퀴에 있는 모든 작업이 끝날 때까지 대기
-for _ in threads:  # 모든 작업 끝날때까지 None 전송
+# 작업 대기
+task_queue.join()
+for _ in threads:
     task_queue.put(None)
-for t in threads:  # 모든 스레드가 종료될때까지 대기
+for t in threads:
     t.join()
 
-# 결과 저장
-df["AI_태그"] = [results.get(i, "오류") for i in range(len(df))]
-df.to_csv("book_test_tagged.csv", index=False, encoding="utf-8-sig")
-
-# 런타임 출력
 end_time = time.time()
-print(f"\n✅ 모든 서평 태그 추출 완료 → 'book_test_tagged.csv' 저장됨!")
+print(f"\n✅ 서평 태그 추출 완료 → '{tagged_file}'에 저장됨!")
 print(f"⏱️ 전체 소요 시간: {end_time - start_time:.2f}초")
+
+
+'''
+
+문제 상황
+
+# 문제 1 : 서평 데이터 없어도 기본 프롬프트로 태깅 진행
+
+>> 해결 방법 서평 데이터 길이 10이하면 공백 저장하고 넘어감
+>> 공백, N/A 등등 포괄적으로 처리 
+
+# 문제 2 : 하나에 대해서 여러 스레드가 처리 Ex) 9788959062249 
+processed_isbns는 실행 시작 시에만 한 번 만들어짐.
+태그 추출 결과(book_test_tagged.csv)를 저장할 때, 중복 ISBN 체크를 하지 않음.
+특히 재시도 로직이 있고, 태그가 부족하거나 오류가 발생하면 다시 task_queue에 넣는데, 이 과정에서 이전 결과와 함께 중복 저장될 수 있음.
+
+# 처음 생각
+1. 결과 저장 전 processed_isbns에 ISBN 추가
+문제점 -> 실패한 ISBN도 '처리된 것'으로 간주 → 그래서 재시도도 안 되고, 결과도 없는 상태로 누락
+
+2(최종종). 상황별로 processed_isbns.add(isbn)의 위치를 분리
+-> 생략 케이스(서평 데이터x) + 태그가 3개 이상일 때 + 재시도 끝 "오류" 저장
+'''
