@@ -115,21 +115,35 @@ SF
 
 tag_candidates = [t.strip() for t in raw_tag_list.strip().splitlines() if t.strip()]
 
-def generate_prompt(review_text):
+def generate_prompt(text):
     prompt = """
-    당신은 문학 서평 전문가입니다. 아래 서평을 읽고, 제공된 태그 목록 중 이 책에 어울리는 태그를 3개에서 5개까지 골라주세요. 무조건 골라야합니다.
+    당신은 수천 권의 문학 작품을 분석해 온 베테랑 문학 평론가입니다.  
+    지금부터 아래 책의 서평 또는 소개글을 기반으로, 이 책의 정체성을 가장 잘 드러내는 태그를 고르세요.
 
-    조건:
-    - 설명 없이 태그만 한 줄로 출력
-    - 쉼표(,)로 구분된 태그를 출력
-    - 태그는 반드시 목록 중에서 선택
-    - 반드시 3개 이상 출력할 것
+    태깅 전 반드시 다음과 같이 사고하고 판단하세요:
+
+    [1단계] 이 책이 다루는 중심 주제나 메시지는 무엇인가요?
+    [2단계] 이야기의 분위기(예: 따뜻함, 어두움, 긴장감 등)는 어떤가요?
+    [3단계] 갈등, 문제의식, 사회적 메시지가 드러나는 지점이 있다면 무엇인가요?
+    [4단계] 위 분석을 종합해, 아래 제공된 태그 목록 중에서 책을 가장 정확히 표현하는 태그를 3~5개 선택하세요.
+
+    반드시 지켜야 할 조건:
+    - 태그는 아래 제공된 목록 중에서만 선택
+    - 반드시 3개 이상, 5개 이하
+    - 중복 없이, 쉼표(,)로 구분된 한 줄로 출력
+    - 설명, 해석, 부연 설명 없이 태그만 출력
     """
-    return f"{prompt}\n\n서평:\n{review_text}\n\n태그 목록:\n{raw_tag_list}"
+    return f"{prompt}\n\n{text}\n\n{raw_tag_list}"
 
 def extract_valid_tags(text):
     raw_tags = [tag.strip() for tag in text.split(",") if tag.strip()]
-    return [tag for tag in raw_tags if tag in tag_candidates]
+    seen = set()
+    unique_valid_tags = []
+    for tag in raw_tags:
+        if tag in tag_candidates and tag not in seen:
+            seen.add(tag)
+            unique_valid_tags.append(tag)
+    return unique_valid_tags
 
 results = {}
 token_cooldown = {}
@@ -156,24 +170,20 @@ def model_worker():
         if item is None:
             break
 
-        idx, isbn, title, review_text, retry_count = item
+        idx, isbn, title, review_text, intro, retry_count = item
 
         with processed_isbns_lock:
             if isbn in processed_isbns:
                 task_queue.task_done()
                 continue
 
-        if len(review_text.strip()) <= 100:
-            tag_str = ""
-            print(f"ℹ️ [{idx+1}] {title} → 리뷰 짧음, 태그 생략")
-            new_row = pd.DataFrame([{"isbn": isbn, "AI_태그": tag_str}])
-            write_header = not os.path.exists(tagged_file) or os.path.getsize(tagged_file) == 0
-            new_row.to_csv(tagged_file, mode="a", header=write_header, index=False, encoding="utf-8-sig")
-            with processed_isbns_lock:
-                processed_isbns.add(isbn)
-            print(f"📌 저장된 ISBN: {isbn} / 태그: (생략)")
-            task_queue.task_done()
-            continue
+        # 조건에 따라 프롬프트 입력
+        if len(review_text.strip()) > 100:
+            input_text = review_text
+        else:
+            input_text = intro
+
+        prompt = generate_prompt(input_text)
 
         with combo_lock:
             combo = all_combos[combo_index % len(all_combos)]
@@ -189,7 +199,6 @@ def model_worker():
         if wait_time > 0:
             time.sleep(wait_time)
 
-        prompt = generate_prompt(review_text)
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -210,7 +219,7 @@ def model_worker():
             if len(tags) < 3:
                 print(f"⚠️ [{idx+1}] {title} → 태그 부족 → 재시도 {retry_count+1}/{max_retries}")
                 if retry_count + 1 < max_retries:
-                    task_queue.put((idx, isbn, title, review_text, retry_count+1))
+                    task_queue.put((idx, isbn, title, review_text, intro, retry_count+1))
                 else:
                     tag_str = "오류"
                     new_row = pd.DataFrame([{"isbn": isbn, "AI_태그": tag_str}])
@@ -232,24 +241,30 @@ def model_worker():
         except Exception as e:
             print(f"❌ [{idx+1}] {title} 에러: {e} (API_KEY_{client_idx+1})")
             if retry_count + 1 < max_retries:
-                task_queue.put((idx, isbn, title, review_text, retry_count+1))
+                task_queue.put((idx, isbn, title, review_text, intro, retry_count+1))
 
         task_queue.task_done()
 
-# CSV 로드 및 컬럼 소문자화
+# ✅ CSV 로드 및 컬럼 소문자화
 df = pd.read_csv("yes24_steadyseller.csv", on_bad_lines='skip', encoding="utf-8")
 df.columns = [col.lower() for col in df.columns]
 
-# 태스크 큐에 작업 넣기
+# ✅ task_queue에 넣기 전에 intro + review가 둘 다 짧으면 제외
 for idx, row in df.iterrows():
     isbn = str(row.get("isbn", "")).strip()
     if not isbn or isbn.lower() == "nan" or isbn in processed_isbns:
         continue
+
     title = row.get("title", "")
     review = str(row.get("publisher_review", "")).strip()
-    task_queue.put((idx, isbn, title, review, 0))
+    intro = str(row.get("intro", "")).strip()
 
-# 쓰레드 실행
+    if len(review) <= 50 and len(intro) <= 50:
+        continue  # ✅ 둘 다 짧으면 태그 생략
+
+    task_queue.put((idx, isbn, title, review, intro, 0))
+
+# ✅ 쓰레드 실행
 threads = []
 num_threads = len(model_list) * len(clients) // 2
 for _ in range(num_threads):
@@ -257,7 +272,7 @@ for _ in range(num_threads):
     t.start()
     threads.append(t)
 
-# 작업 대기
+# ✅ 작업 대기
 task_queue.join()
 for _ in threads:
     task_queue.put(None)
@@ -267,26 +282,3 @@ for t in threads:
 end_time = time.time()
 print(f"\n✅ 서평 태그 추출 완료 → '{tagged_file}'에 저장됨!")
 print(f"⏱️ 전체 소요 시간: {end_time - start_time:.2f}초")
-
-
-'''
-
-문제 상황
-
-# 문제 1 : 서평 데이터 없어도 기본 프롬프트로 태깅 진행
-
->> 해결 방법 서평 데이터 길이 10이하면 공백 저장하고 넘어감
->> 공백, N/A 등등 포괄적으로 처리 
-
-# 문제 2 : 하나에 대해서 여러 스레드가 처리 Ex) 9788959062249 
-processed_isbns는 실행 시작 시에만 한 번 만들어짐.
-태그 추출 결과(book_test_tagged.csv)를 저장할 때, 중복 ISBN 체크를 하지 않음.
-특히 재시도 로직이 있고, 태그가 부족하거나 오류가 발생하면 다시 task_queue에 넣는데, 이 과정에서 이전 결과와 함께 중복 저장될 수 있음.
-
-# 처음 생각
-1. 결과 저장 전 processed_isbns에 ISBN 추가
-문제점 -> 실패한 ISBN도 '처리된 것'으로 간주 → 그래서 재시도도 안 되고, 결과도 없는 상태로 누락
-
-2(최종종). 상황별로 processed_isbns.add(isbn)의 위치를 분리
--> 생략 케이스(서평 데이터x) + 태그가 3개 이상일 때 + 재시도 끝 "오류" 저장
-'''
