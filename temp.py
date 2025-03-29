@@ -141,7 +141,7 @@ def generate_prompt(text):
     반드시 지켜야 할 조건:
     - 태그는 아래 제공된 목록 중에서만 선택
     - 반드시 3개 이상, 6개 이하
-    - 정확도가 높다고 생각되는 태그부터 순서대로 출력력
+    - 정확도가 높다고 생각되는 태그 순서대로 출력력
     - 중복 없이, 쉼표(,)로 구분된 한 줄로 출력
     - 설명, 해석, 부연 설명 없이 태그만 출력
     """
@@ -206,7 +206,7 @@ def model_worker():
                 continue
 
         # 조건에 따라 프롬프트 입력
-        if len(review_text.strip()) > 300:
+        if len(review_text.strip()) > 50:
             input_text = review_text
         else:
             input_text = intro
@@ -273,11 +273,11 @@ def model_worker():
 
         task_queue.task_done()
 
-# CSV 로드 및 컬럼 소문자화
+# ✅ CSV 로드 및 컬럼 소문자화
 df = pd.read_csv(input_path, on_bad_lines='skip', encoding="utf-8")
 df.columns = [col.lower() for col in df.columns]
 
-# task_queue에 넣기 전에 intro + review가 둘 다 짧으면 제외
+# ✅ task_queue에 넣기 전에 intro + review가 둘 다 짧으면 제외
 for idx, row in df.iterrows():
     isbn = str(row.get("isbn", "")).strip()
     if not isbn or isbn.lower() == "nan" or isbn in processed_isbns:
@@ -287,12 +287,12 @@ for idx, row in df.iterrows():
     review = str(row.get("publisher_review", "")).strip()
     intro = str(row.get("intro", "")).strip()
 
-    if len(review) <= 300 and len(intro) <= 300:
-        continue  # 둘 다 짧으면 태그 생략
+    if len(review) <= 50 and len(intro) <= 50:
+        continue  # ✅ 둘 다 짧으면 태그 생략
 
     task_queue.put((idx, isbn, title, review, intro, 0))
 
-# 쓰레드 실행
+# ✅ 쓰레드 실행
 threads = []
 num_threads = len(model_list) * len(clients) // 2
 for _ in range(num_threads):
@@ -300,7 +300,7 @@ for _ in range(num_threads):
     t.start()
     threads.append(t)
 
-# 작업 대기
+# ✅ 작업 대기
 task_queue.join()
 for _ in threads:
     task_queue.put(None)
