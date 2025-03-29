@@ -155,9 +155,8 @@ def extract_valid_tags(text):
         if tag in tag_candidates and tag not in seen:
             seen.add(tag)
             unique_valid_tags.append(tag)
-        # 태그 6개까지만 허용 
         if len(unique_valid_tags) == 6:
-            break  
+            break
     return unique_valid_tags
 
 results = {}
@@ -168,19 +167,16 @@ combo_lock = Lock()
 processed_isbns_lock = Lock()
 task_queue = Queue()
 
-
-
 # input
-input_filename = "NL_BO_BOOK_PUB_202012-1.csv"
+filename = "NL_BO_BOOK_PUB_202012-1"
+input_filename = f"{filename}.csv"
 input_path = f"book_data_crawled/2020/{input_filename}"
 
-# input_filename = "test.csv"
-# input_path = f"{input_filename}"
-
-# output 
+# output
 output_dir = "book_data_taged/2020"
-output_path = os.path.join(output_dir, input_filename)
 os.makedirs(output_dir, exist_ok=True)
+output_filename = f"{filename}_taged.csv"
+output_path = os.path.join(output_dir, output_filename)
 
 if os.path.exists(output_path):
     existing_df = pd.read_csv(output_path)
@@ -205,7 +201,6 @@ def model_worker():
                 task_queue.task_done()
                 continue
 
-        # 조건에 따라 프롬프트 입력
         if len(review_text.strip()) > 300:
             input_text = review_text
         else:
@@ -277,7 +272,8 @@ def model_worker():
 df = pd.read_csv(input_path, on_bad_lines='skip', encoding="utf-8")
 df.columns = [col.lower() for col in df.columns]
 
-# task_queue에 넣기 전에 intro + review가 둘 다 짧으면 제외
+# 조건에 맞는 태깅 대상 수 확인 및 task_queue에 추가
+valid_count = 0
 for idx, row in df.iterrows():
     isbn = str(row.get("isbn", "")).strip()
     if not isbn or isbn.lower() == "nan" or isbn in processed_isbns:
@@ -290,7 +286,11 @@ for idx, row in df.iterrows():
     if len(review) <= 300 and len(intro) <= 300:
         continue  # 둘 다 짧으면 태그 생략
 
+    valid_count += 1
     task_queue.put((idx, isbn, title, review, intro, 0))
+
+# ✅ 태깅 대상 개수 출력
+print(f"🎯 태깅 대상 도서 개수: {valid_count}권\n")
 
 # 쓰레드 실행
 threads = []
