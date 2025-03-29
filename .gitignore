@@ -1,0 +1,10 @@
+# .gitignore
+
+# API_KEY
+.env
+
+# DATA 
+book_data_crawled/
+raw_book_data/
+raw_book_rental_data/
+raw_library_data/

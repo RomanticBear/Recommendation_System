@@ -5,7 +5,6 @@ import sys
 import os
 import re
 import time
-import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fake_useragent import UserAgent
 
@@ -151,9 +150,9 @@ def save_data(crawled_data, output_filename):
 
 
 def main():
-    input_filename = "NL_BO_BOOK_PUB_202402-1"
-    input_path = f"bookdata_raw/page_1/{input_filename}.csv"
-    output_path = f"bookdata_crawled/page_1/{input_filename}_crawled.csv"
+    input_filename = "NL_BO_BOOK_PUB_202012-1"
+    input_path = f"book_data_raw/2020/{input_filename}.csv"
+    output_path = f"book_data_crawled/2020/{input_filename}_crawled.csv"
 
     # 입력 CSV 읽기
     isbn_df = read_csv_subset(input_path)
