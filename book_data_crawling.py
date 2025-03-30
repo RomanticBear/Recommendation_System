@@ -22,7 +22,7 @@ def safe_request(url, retries=3, delay=2):
             return response
         except requests.HTTPError as e:
             print(f"[ERROR] HTTP 오류 ({e}) - {url}")
-            break  # 4xx는 재시도 안 함
+            break
         except requests.RequestException as e:
             print(f"[WARN] 요청 실패 ({e}), 재시도 {attempt + 1}/{retries}")
             time.sleep(delay)
@@ -149,9 +149,25 @@ def save_data(crawled_data, output_filename):
         print(f"[ERROR] CSV 저장 실패: {e}")
 
 
+def get_existing_isbns(base_dir="book_data_crawled"):
+    existing_isbns = set()
+    for root, dirs, files in os.walk(base_dir):
+        for file in files:
+            if file.endswith(".csv"):
+                file_path = os.path.join(root, file)
+                try:
+                    df = pd.read_csv(file_path)
+                    if "ISBN" in df.columns:
+                        isbns = df["ISBN"].dropna().astype(str)
+                        existing_isbns.update(isbns)
+                except Exception as e:
+                    print(f"[WARN] 기존 ISBN 읽기 실패 - {file_path}: {e}")
+    return existing_isbns
+
+
 def main():
-    input_filename = "NL_BO_BOOK_PUB_202012-1"
-    input_path = f"book_data_raw/2020/{input_filename}.csv"
+    input_filename = "NL_BO_BOOK_PUB_202012-2"
+    input_path = f"raw_book_data/2020/{input_filename}.csv"
     output_path = f"book_data_crawled/2020/{input_filename}.csv"
 
     # 입력 CSV 읽기
@@ -162,22 +178,27 @@ def main():
 
     full_isbn_list = list(isbn_df["ISBN_THIRTEEN_NO"].dropna())
 
-    # 이미 처리된 ISBN(STATUS가 SUCCESS 또는 FAILED인 것) 읽기
+    # 이미 처리된 ISBN(STATUS가 SUCCESS 또는 FAILED인 것) 읽기 (실행 과정정)
     already_processed_isbns = set()
     crawled_data = []
     if os.path.exists(output_path):
         df_existing = pd.read_csv(output_path)
         if "STATUS" in df_existing.columns:
-            # 크롤링 된 isbn 목록 추출 
             already_processed_isbns = set(df_existing.loc[df_existing["STATUS"].isin(["SUCCESS", "FAILED"]), "ISBN"].astype(str))
         else:
             already_processed_isbns = set(df_existing["ISBN"].astype(str))
         crawled_data = df_existing.to_dict("records")
 
-    # 처리되지 않은 ISBN만 선택
-    remaining_isbn_list = [isbn for isbn in full_isbn_list if str(isbn) not in already_processed_isbns]
-    print(f"[INFO] 남은 ISBN 수: {len(remaining_isbn_list)}")
+    # 중복 제거 대상 ISBN 수집
+    existing_isbns_in_all_files = get_existing_isbns("book_data_crawled")
+    print(f"[INFO] 기존 파일에서 수집한 ISBN 수: {len(existing_isbns_in_all_files)}")
 
+    # 처리되지 않았고, 기존 파일에도 없는 ISBN만 선택
+    remaining_isbn_list = [
+        isbn for isbn in full_isbn_list
+        if str(isbn) not in already_processed_isbns and str(isbn) not in existing_isbns_in_all_files
+    ]
+    print(f"[INFO] 최종 크롤링 대상 ISBN 수: {len(remaining_isbn_list)}")
 
     def process_isbn(isbn):
         try:
@@ -206,14 +227,13 @@ def main():
                     crawled_data.append(result)
                 if idx % batch_size == 0:
                     print(f"[INFO] {idx}개 완료. 중간 저장 중...")
-                    # 중간 저장 시에는 STATUS 컬럼 그대로 저장
                     save_data(crawled_data, output_path)
     except Exception as e:
         print(f"[ERROR] 병렬 크롤링 중단: {e}")
         save_data(crawled_data, output_path)
         sys.exit(1)
 
-    # 최종 저장 전: FAILED인 행 제거 및 STATUS 컬럼 제거
+    # 최종 저장 전: FAILED 제거 및 STATUS 컬럼 삭제
     df_all = pd.DataFrame(crawled_data)
     df_success = df_all[df_all["STATUS"] == "SUCCESS"].copy()
     if "STATUS" in df_success.columns:
