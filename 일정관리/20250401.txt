@@ -1,0 +1,23 @@
+***오늘 할 것***
+
+- LightFM 모델 분리 → FastAPI 활용 용도
+
+- S3, Redis 파이썬 연결
+
+- Spark 크롤링 코드 변경 → 청크 기반 수정 
+
+
+
+***기타***
+
+- AirFlow 설정 → Doker설치 ~ Airflow설정 
+
+- https://m.blog.naver.com/towards-ai/223045844509
+
+
+
+***내일 할 것***
+
+- LightFM 모델 파이프라인 구성 → 학습 (배치 마무리)
+
+- 로그데이터 기반 장르 행렬 벡터 유사도 추천(실시간 시작 )
