@@ -11,4 +11,5 @@ raw_book_data/
 raw_book_rental_data/
 raw_library_data/
 csv_uploader.py
+fastapi/app/confing.py
 
