@@ -5,15 +5,9 @@
 
 # DATA 
 data/
-# book_data_crawled/
-# book_data_taged/
-# book_data_merged/
-# raw_book_data/
-# raw_book_rental_data/
-# raw_library_data/
-
 
 # CODE
 code/csv_uploader.py
 fastapi/app/confing.py
 code/test_s3.py
+
