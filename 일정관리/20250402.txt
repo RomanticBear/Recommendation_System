@@ -1,0 +1,14 @@
+***오늘 할 것***
+
+- top_rent 크롤링 시작
+
+- s3 Python 연동
+
+- LightFM 코드 모듈화 
+
+- AirFlow, Docker 설정 + Airflow 익히기
+
+
+***해야 할 것*** 
+
+- 모듈화 코드 → 에어플로우 이용해서 S3 올리기
