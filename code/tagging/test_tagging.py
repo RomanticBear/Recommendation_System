@@ -182,5 +182,4 @@ print(chat_completion.choices[0].message.content)
 
 
 
-
 # 문제점 1 - 서평 데이터 없는데 태그 달아줌 -> 기본 프롬프트로 작동한듯 

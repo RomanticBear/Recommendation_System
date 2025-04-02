@@ -66,17 +66,39 @@ def get_rated_keyword_related_recommendations():
     """
     pass
 
-def get_user_keyword_recommendations():
+def get_user_keyword_recommendations(user_id: int, db):
     """
-    내가 많이 본 키워드 기반 추천 로직 구현
+    내가 많이 본 키워드 상위 5개 반환
     """
-    pass
+    query = text("""
+        SELECT t.name, COUNT(*) AS count
+        FROM Nest n
+        JOIN BookTag bt ON n.book_id = bt.book_id
+        JOIN Tag t ON bt.tag_id = t.id
+        WHERE n.user_id = :user_id
+        GROUP BY t.name
+        ORDER BY count DESC
+        LIMIT 5
+    """)
+    result = db.execute(query, {"user_id": user_id}).mappings().fetchall()
+    return [{"tag": row["name"], "count": row["count"]} for row in result]
 
-def get_user_category_recommendations():
+def get_user_category_recommendations(user_id: int, db):
     """
-    내가 많이 본 카테고리 기반 추천 로직 구현
+    내가 많이 본 카테고리 상위 5개 반환
     """
-    pass
+    query = text("""
+        SELECT c.name, COUNT(*) AS count
+        FROM Nest n
+        JOIN BookCategory bc ON n.book_id = bc.book_id
+        JOIN Category c ON bc.category_id = c.id
+        WHERE n.user_id = :user_id
+        GROUP BY c.name
+        ORDER BY count DESC
+        LIMIT 5
+    """)
+    result = db.execute(query, {"user_id": user_id}).mappings().fetchall()
+    return [{"category": row["name"], "count": row["count"]} for row in result]
 
 def get_architype_recommendations():
     """

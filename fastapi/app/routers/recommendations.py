@@ -88,18 +88,19 @@ def recommend_rated_keyword_related():
     return rec.get_rated_keyword_related_recommendations()
 
 @router.get("/user-keyword")
-def recommend_user_keyword():
+def recommend_user_keyword(user_id: int, db=Depends(get_db)):
     """
     내가 많이 본 키워드 기반 추천 API
     """
-    return rec.get_user_keyword_recommendations()
+    return rec.get_user_keyword_recommendations(user_id, db)
+
 
 @router.get("/user-category")
-def recommend_user_category():
+def recommend_user_category(user_id: int, db=Depends(get_db)):
     """
     내가 많이 본 카테고리 기반 추천 API
     """
-    return rec.get_user_category_recommendations()
+    return rec.get_user_category_recommendations(user_id, db)
 
 @router.get("/architype")
 def recommend_architype():
